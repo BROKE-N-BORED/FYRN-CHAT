@@ -1,0 +1,25 @@
+# Build + runtime
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.zip
+logs/
+.gui-smoke-error.txt
+
+# Rendered from assets/fyrn-chat-test.svg by render_icons.py
+assets/fyrn-chat-test-48.png
+assets/fyrn-chat-test-256.png
+assets/fyrn-chat-test.png
+
+# Secrets — never committed (immutable rule)
+.env
+.env.*
+*.env
+local_config.py
+config.local.*
+providers.json
+*.key
+*.pem
+*secret*
+*credentials*

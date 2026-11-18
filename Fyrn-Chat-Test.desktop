@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Fyrn Chat Test
+Comment=Chat with models through Fyrn, and smoke test them
+# NOTE: the app dir and the home folder are baked in by install.sh
+# (the same sed pass that fills in the Icon line below). The tool
+# starts through the launcher in ~/.local/bin/fyrn-chat-test, not
+# run.sh directly: the launcher finds the folder again if it
+# moved, so the icon keeps working after a move. Do NOT use the
+# %k trick here: %k expands to the desktop file's own path, and
+# the installed copy lives in ~/.local/share/applications —
+# run.sh is not there, so the menu icon would silently do
+# nothing.
+Exec=__HOME__/.local/bin/fyrn-chat-test
+Icon=__APP_DIR__/assets/fyrn-chat-test-48.png
+Terminal=false
+Categories=Utility;
+StartupWMClass=fyrn-chat-test

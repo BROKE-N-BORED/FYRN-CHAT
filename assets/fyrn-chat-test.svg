@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Fyrn Chat Test icon: a chat bubble with a check mark, on the bench tile. -->
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#131f18"/>
+  <ellipse cx="128" cy="132" rx="92" ry="82" fill="#2e7d32" opacity="0.25"/>
+  <path d="M 86 168 L 98 206 L 126 168 Z" fill="#2e7d32"/>
+  <rect x="48" y="62" width="160" height="112" rx="30" fill="#2e7d32"/>
+  <polyline points="88,118 116,146 172,88" fill="none" stroke="#e9f2ec" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
