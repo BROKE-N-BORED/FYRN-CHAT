@@ -66,6 +66,7 @@ PLAIN_FILES = [
     "fyrnchattest/reports.py",
     "fyrnchattest/theme.py",
     "fyrnchattest/gui.py",
+    "fyrnchattest/updates.py",
     "tests/__init__.py",
     "tests/helpers.py",
     "tests/test_helpers.py",
@@ -76,6 +77,7 @@ PLAIN_FILES = [
     "tests/test_gui.py",
     "tests/test_install.py",
     "tests/test_theme.py",
+    "tests/test_updates.py",
 ]
 
 

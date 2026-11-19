@@ -13,7 +13,8 @@ from helpers import (ensure_fake_fyrn, make_fake_gguf,
 ensure_fake_fyrn()
 
 import fyrn  # noqa: E402
-from fyrnchattest.models import format_model_line, list_models  # noqa: E402
+from fyrnchattest.models import (format_model_line,  # noqa: E402
+                                 is_embedding_model, list_models)
 
 
 def _qwen3_numbers():
@@ -142,6 +143,63 @@ class ListModelsTests(unittest.TestCase):
         self.assertEqual([m["name"] for m in models], ["mine.gguf"])
 
 
+class IsEmbeddingModelTests(unittest.TestCase):
+    def _model(self, name, facts=None):
+        return {"name": name, "path": "/x/model.gguf",
+                "size": 1024, "description": "",
+                "source": "folder", "facts": facts or {}}
+
+    def test_bert_architecture_is_embedding(self):
+        self.assertTrue(is_embedding_model(
+            self._model("nomic.gguf", {"architecture": "bert"})))
+
+    def test_nomic_bert_architecture_is_embedding(self):
+        self.assertTrue(is_embedding_model(
+            self._model("nomic.gguf",
+                        {"architecture": "nomic-bert"})))
+
+    def test_architecture_match_is_case_insensitive(self):
+        self.assertTrue(is_embedding_model(
+            self._model("nomic.gguf",
+                        {"architecture": "BERT"})))
+
+    def test_chat_architecture_is_not_embedding(self):
+        self.assertFalse(is_embedding_model(
+            self._model("qwen3-2b.gguf",
+                        {"architecture": "qwen3"})))
+
+    def test_embed_in_name_is_embedding(self):
+        self.assertTrue(is_embedding_model(
+            self._model("nomic-embed-text:latest")))
+        self.assertTrue(is_embedding_model(
+            self._model("mxbai-EMBED-large:latest")))
+
+    def test_plain_name_with_no_facts_is_not_embedding(self):
+        self.assertFalse(is_embedding_model(
+            self._model("plain.gguf")))
+
+    def test_missing_facts_is_not_embedding(self):
+        model = {"name": "plain.gguf", "path": "/x/plain.gguf",
+                 "size": 1024, "description": "",
+                 "source": "folder"}
+        self.assertFalse(is_embedding_model(model))
+
+    def test_bert_file_lists_as_embedding(self):
+        tmp = Path(tempfile.mkdtemp(prefix="fyrnct-embed-"))
+        try:
+            models_dir = tmp / "Models"
+            models_dir.mkdir()
+            write_gguf_file(
+                models_dir / "nomic-embed.gguf",
+                {"general.architecture": "bert"})
+            models, _skipped, _warnings = list_models(
+                models_dir, include_ollama=False, fyrn_pkg=fyrn)
+            self.assertEqual(len(models), 1)
+            self.assertTrue(is_embedding_model(models[0]))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class FormatModelLineTests(unittest.TestCase):
     def test_line_carries_facts_fit_and_source(self):
         model = {"name": "qwen3:2b", "path": "/x/blob",
@@ -176,6 +234,24 @@ class FormatModelLineTests(unittest.TestCase):
         line = format_model_line(model, 8 * 1024 ** 3,
                                  fyrn_pkg=fyrn)
         self.assertIn("Too big", line)
+
+    def test_embedding_model_line_says_embedding_only(self):
+        model = {"name": "nomic-embed-text:latest",
+                 "path": "/x/blob", "size": 274 * 1024 ** 2,
+                 "description": "", "source": "ollama",
+                 "facts": {"architecture": "bert"}}
+        line = format_model_line(model, 8 * 1024 ** 3,
+                                 fyrn_pkg=fyrn)
+        self.assertIn("Embedding only", line)
+
+    def test_chat_model_line_has_no_embedding_marker(self):
+        model = {"name": "qwen3:2b", "path": "/x/blob",
+                 "size": 2 * 1024 ** 3, "description": "",
+                 "source": "ollama",
+                 "facts": {"architecture": "qwen3"}}
+        line = format_model_line(model, 8 * 1024 ** 3,
+                                 fyrn_pkg=fyrn)
+        self.assertNotIn("Embedding only", line)
 
 
 if __name__ == "__main__":

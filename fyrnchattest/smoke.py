@@ -10,7 +10,10 @@ A prompt that runs past PROMPT_TIMEOUT_S is stopped and fails
 the model: a model that cannot answer "Say hello in one
 sentence" in three minutes is not usable. Cancel stops the run
 cleanly: the current model unloads, and the models not yet
-started are recorded as not tested, not failed.
+started are recorded as not tested, not failed. An embedding
+model is recorded as not tested, never failed: it cannot write
+replies, so the smoke test does not apply to it, and it is
+never loaded.
 
 This module is Qt-free: the GUI runs run_smoke_test in a worker
 thread, and tests call it directly. Progress goes out through
@@ -22,6 +25,8 @@ import threading
 import time
 
 from fyrn.runner import GenerationCancelled
+
+from .models import is_embedding_model
 
 # The two canned prompts. Fixed, so every run is comparable and
 # every report reads the same way: one trivial reply (does the
@@ -161,6 +166,17 @@ def run_smoke_test(models, controller, on_progress=None,
         if user_cancel.is_set():
             _record(index, _not_tested(model))
             continue
+        if is_embedding_model(model):
+            # An embedding model cannot write replies, so the
+            # smoke test does not apply: not tested, never
+            # failed, and no load is attempted.
+            _record(index, _embedding_skipped(model))
+            if on_progress is not None:
+                on_progress("model_started", index, name,
+                            "Embedding only, skipped.")
+                on_progress("model_done", index, name,
+                            "not tested")
+            continue
         if on_progress is not None:
             on_progress("model_started", index, name,
                         "Loading %s..." % name)
@@ -271,6 +287,21 @@ def _not_tested(model):
             "load_error": None, "prompts": [],
             "verdict": "not tested",
             "error": "Not tested: the run stopped before this model."}
+
+
+def _embedding_skipped(model):
+    """A result for an embedding-only model: not tested, never
+    failed. It cannot write replies, so the smoke test does
+    not apply to it. No load was attempted."""
+    return {"name": model.get("display_name") or model["name"],
+            "path": str(model["path"]),
+            "source": model.get("source", "folder"),
+            "size": model.get("size"),
+            "load_ok": False, "load_time_s": None,
+            "load_error": None, "prompts": [],
+            "verdict": "not tested",
+            "error": "Embedding only: this model can't write "
+                     "replies, so the smoke test doesn't apply."}
 
 
 def summarize(results):

@@ -76,8 +76,16 @@ def format_report_md(results, meta):
         prompts = result.get("prompts") or []
         first = prompts[0] if len(prompts) > 0 else None
         second = prompts[1] if len(prompts) > 1 else None
-        load = ("ok (%s)" % _fmt_seconds(result.get("load_time_s"))
-                if result.get("load_ok") else "failed")
+        if result.get("load_ok"):
+            load = "ok (%s)" % _fmt_seconds(
+                result.get("load_time_s"))
+        elif result.get("load_error"):
+            load = "failed"
+        else:
+            # No load was attempted: the run stopped before
+            # this model, or it is an embedding model the test
+            # skips. Not a failure.
+            load = "-"
         lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
             result["name"], load,
             _prompt_cell(first), _prompt_cell(second),
@@ -111,6 +119,14 @@ def format_report_md(results, meta):
             lines.append("")
         if not result.get("prompts"):
             lines.append("No prompts were run.")
+            if result.get("error") \
+                    and not result.get("load_error"):
+                # The reason nothing ran, when the run recorded
+                # one (an embedding model the test skips, or a
+                # run that stopped before this model). A load
+                # failure already has its own line above.
+                lines.append("")
+                lines.append(result["error"])
             lines.append("")
     return "\n".join(lines)
 

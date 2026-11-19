@@ -64,11 +64,40 @@ def _resolvable(path):
         return False
 
 
+# GGUF architectures that are embedding-only models (encoder
+# only, no decoder): they load fine but cannot write replies,
+# so llama-cpp-python's generate fails on them with "Memory is
+# not initialized". Fyrn's core lists vision architectures but
+# no embedding ones, so the list lives here.
+EMBEDDING_ARCHITECTURES = frozenset(("bert", "nomic-bert"))
+
+
+def is_embedding_model(model):
+    """True when a model looks like an embedding-only model.
+
+    A heuristic, not a proof: the header architecture is a
+    BERT-family embedding arch, or the name says "embed"
+    (Ollama names like nomic-embed-text:latest). An embedding
+    model turns text into numbers for search; it cannot write
+    replies, so it cannot chat and the smoke test does not
+    apply to it. A model the header says nothing about, with
+    no "embed" in its name, is treated as a chat model: the
+    check never blocks a model it cannot identify.
+    """
+    facts = model.get("facts") or {}
+    arch = facts.get("architecture")
+    if isinstance(arch, str) \
+            and arch.lower() in EMBEDDING_ARCHITECTURES:
+        return True
+    return "embed" in (model.get("name") or "").lower()
+
+
 def format_model_line(model, free_bytes, fyrn_pkg=None):
     """One model as the two lines the list shows: the name, then
     size, facts, fit badge, and where it came from. A model the
     header says nothing about shows no facts: nothing is ever
-    invented."""
+    invented. An embedding model carries an "Embedding only"
+    marker: it cannot chat."""
     if fyrn_pkg is None:
         import fyrn as fyrn_pkg
     core, _discover = _submodules(fyrn_pkg)
@@ -82,6 +111,8 @@ def format_model_line(model, free_bytes, fyrn_pkg=None):
     parts = [core.format_size(model["size"])]
     if facts:
         parts.append(facts)
+    if is_embedding_model(model):
+        parts.append("Embedding only")
     parts.append(badge)
     parts.append(source)
     return "%s\n%s" % (model["name"], "  ·  ".join(parts))

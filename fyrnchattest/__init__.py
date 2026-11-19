@@ -7,5 +7,5 @@ Fyrn itself, not a copy of it. It never modifies Fyrn's
 install, its settings, or its models folder.
 """
 
-__version__ = "0.1"
+__version__ = "0.1.1"
 __app_name__ = "Fyrn Chat Test"

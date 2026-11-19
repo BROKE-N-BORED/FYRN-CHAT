@@ -95,6 +95,25 @@ def _show_fatal(message):
 def main_entry():
     """The real entry point, split out so tests can call the
     fast-path check without launching the GUI."""
+    # A downloaded update waits here when the last run said no
+    # to restarting: install it now, before the window exists,
+    # then start fresh so the window runs the new code. This
+    # process already imported the old package, so without the
+    # restart it would report the old version and offer the
+    # same update again. It runs before the single-instance
+    # lock, so no lock is held across the restart.
+    from .updates import apply_staged_update
+    applied = apply_staged_update()
+    if applied is not None:
+        try:
+            os.execv(sys.executable,
+                     [sys.executable, "-m", "fyrnchattest"]
+                     + sys.argv[1:])
+        except OSError as exc:
+            print("Fyrn Chat Test: the update was installed, "
+                  "but the app could not restart itself (%s). "
+                  "Close it and start it again." % exc,
+                  file=sys.stderr)
     if _try_raise_running():
         return 0
     # First instance: find Fyrn before anything Qt is imported.

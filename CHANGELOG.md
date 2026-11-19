@@ -1,5 +1,11 @@
 # Changelog
 
+## Fyrn Chat Test v0.1.1
+
+- Fyrn Chat Test checks for updates now. On launch it quietly asks GitHub for the newest release: up to date, nothing happens. A newer version gets a popup asking whether to download it, never a silent download. The download is checked against the release's checksum before anything is installed, and after the download a popup asks whether to restart now to finish the update. Saying no finishes the update the next time the app starts. Help menu, Check for updates, checks on demand.
+- Embedding models are handled honestly now. A model the header marks as a BERT-family embedding model, or one with "embed" in its name, shows "Embedding only" in the list. Load refuses it for a chat in plain words instead of loading it and failing at the first reply, and the smoke test marks it NOT TESTED with the reason instead of failing it. A reply that fails with the engine's "Memory is not initialized" error now says in plain words that the model couldn't start a reply.
+- The Load column and the report now say "-" when no load was attempted (a run cancelled before the model started, or an embedding model the test skips), instead of "failed". The detail box and the report now show the reason a model was not tested.
+
 ## Fyrn Chat Test v0.1 (2026-11-17)
 
 The first version: a chat window and a smoke test that run on the Fyrn installed on this PC, instead of Ollama.

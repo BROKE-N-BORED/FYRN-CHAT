@@ -307,7 +307,9 @@ class GuiTestCase(unittest.TestCase):
         self._saved_env = {}
         for key in ("FYRN_CHAT_TEST_HOME",
                     "FYRN_CHAT_TEST_SETTINGS_FILE",
-                    "FYRN_SETTINGS_FILE", "FYRN_INSTALL_DIR"):
+                    "FYRN_SETTINGS_FILE", "FYRN_INSTALL_DIR",
+                    "FYRN_CHAT_TEST_APP_DIR",
+                    "FYRN_CHAT_TEST_UPDATE_URL"):
             self._saved_env[key] = os.environ.get(key)
             os.environ.pop(key, None)
         os.environ["FYRN_CHAT_TEST_HOME"] = str(self.home)
@@ -344,6 +346,10 @@ class GuiTestCase(unittest.TestCase):
             runner_factory = lambda: FakeRunner(  # noqa: E731
                 reply_text="Hello from the fake model.")
         kwargs.setdefault("include_ollama", False)
+        # The update check is off by default: the suite never
+        # touches the network. The update tests turn it on with
+        # a stub opener.
+        kwargs.setdefault("check_updates", False)
         install = FyrnInstall(self.fyrn_dir,
                               self.fyrn_dir / ".venv" / "bin"
                               / "python", "0.5-test")

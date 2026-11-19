@@ -35,7 +35,8 @@ def _models(folder, names):
 class FailingRunner(FakeRunner):
     """A runner whose load always fails."""
 
-    def load(self, path, progress_cb=None, cancel_event=None):
+    def load(self, path, progress_cb=None, cancel_event=None,
+             display_name=None):
         raise RunnerError("The model could not be loaded (boom).")
 
 
@@ -181,6 +182,49 @@ class SmokeTests(unittest.TestCase):
 
         run_smoke_test(models, controller, on_model_done=_done)
         self.assertEqual(done, [(0, "pass"), (1, "pass")])
+
+    def test_embedding_model_is_not_tested_without_loading(self):
+        # FailingRunner proves no load was attempted: a load
+        # would fail with "boom", and the skip has no load
+        # error at all.
+        models = _models(self.models_dir, ["embed.gguf"])
+        models[0]["facts"] = {"architecture": "bert"}
+        controller = self._controller(FailingRunner())
+        results = run_smoke_test(models, controller)
+        self.assertEqual(results[0]["verdict"], "not tested")
+        self.assertIsNone(results[0]["load_error"])
+        self.assertFalse(results[0]["load_ok"])
+        self.assertEqual(results[0]["prompts"], [])
+        self.assertIn("Embedding only", results[0]["error"])
+        self.assertEqual(summarize(results), (0, 0, 1))
+        self.assertFalse(controller.is_loaded)
+
+    def test_embedding_model_by_name_is_not_tested(self):
+        models = _models(self.models_dir,
+                         ["nomic-embed-text.gguf"])
+        controller = self._controller(FailingRunner())
+        results = run_smoke_test(models, controller)
+        self.assertEqual(results[0]["verdict"], "not tested")
+        self.assertIn("Embedding only", results[0]["error"])
+
+    def test_embedding_model_skipped_among_chat_models(self):
+        models = _models(self.models_dir,
+                         ["a-embed.gguf", "b-chat.gguf"])
+        models[0]["facts"] = {"architecture": "bert"}
+        controller = self._controller(FakeRunner(
+            reply_text="Hello. def add(a, b): return a + b"))
+        done = []
+
+        def _done(index, result):
+            done.append((index, result["verdict"]))
+
+        results = run_smoke_test(models, controller,
+                                 on_model_done=_done)
+        self.assertEqual([r["verdict"] for r in results],
+                         ["not tested", "pass"])
+        self.assertEqual(done, [(0, "not tested"), (1, "pass")])
+        self.assertEqual(summarize(results), (1, 0, 1))
+        self.assertFalse(controller.is_loaded)
 
     def test_prompts_are_the_canned_two(self):
         self.assertEqual(len(PROMPTS), 2)

@@ -41,9 +41,10 @@ from fyrn.core import (ModelController, ModelNotFoundError,
 from fyrn.runner import (GenerationCancelled, LlamaRunner,
                          RunnerError, trim_history)
 
-from . import __version__
+from . import __version__, updates
 from .finder import ensure_home, fyrn_is_running, get_home
-from .models import format_model_line, list_models
+from .models import (format_model_line, is_embedding_model,
+                      list_models)
 from .reports import new_run_dir, reports_dir, write_report
 from .smoke import PROMPTS, run_smoke_test, summarize
 from .theme import DARK, build_stylesheet, verdict_badges
@@ -71,6 +72,7 @@ These are the models Fyrn sees: Fyrn's own models folder, plus models already in
 - Click a model to pick it for a chat. Nothing is picked until you click.
 - Tick a model to include it in a smoke test. Tick and click are separate: ticking does not pick, clicking does not tick.
 - Refresh re-reads the folders. Ticks stay on the models you ticked.
+- A model marked "Embedding only" turns text into numbers for search: it cannot write replies, so Load refuses it and the smoke test skips it instead of failing it.
 
 CHAT (right, Chat tab)
 1. Click a model, then press Load. Loading a big model takes a while: the bar shows what is happening.
@@ -91,6 +93,9 @@ TIPS
 - Close Fyrn itself before testing: two programs loading models at once share the same 8 GB of RAM.
 - A smoke test takes a while: each model loads fully, and each question can take up to three minutes before it counts as a failure.
 - File menu, Debug report, writes a report file with the log and the PC details, with any secrets removed. Send that file when asking for help.
+
+UPDATES
+Fyrn Chat Test checks for a newer version when it starts. If one is out, it asks before downloading anything, checks the download against its checksum, and asks again before restarting. Saying no to the restart finishes the update the next time the app starts. Help menu, Check for updates, checks now.
 """
 
 ABOUT_TEXT = ("Fyrn Chat Test %s\n\n"
@@ -167,6 +172,19 @@ def explain_load_error(message):
         return (message + "\n\nThat means Fyrn's engine does not "
                 "know this model yet, not that the file is "
                 "broken. The model needs a newer Fyrn engine.")
+    return message
+
+
+def explain_reply_error(message):
+    """A failed reply in plainer words. "Memory is not
+    initialized" is the engine's way of saying the model has
+    no reply memory: that is how embedding models fail, because
+    they have no decoder and cannot write replies at all."""
+    if "Memory is not initialized" in message:
+        return ("The model couldn't start a reply (the engine's "
+                "reply memory isn't initialized). Embedding "
+                "models fail this way. They can't write "
+                "replies.")
     return message
 
 
@@ -298,6 +316,59 @@ class SmokeWorker(QThread):
         self.cancel_event.set()
 
 
+class UpdateCheckWorker(QThread):
+    """Check GitHub for a newer release off the UI thread: a
+    slow or absent network must never delay startup."""
+
+    finished = Signal(dict)  # check_for_update's result
+
+    def __init__(self, current_version, urlopen=None):
+        super().__init__()
+        self.current_version = current_version
+        self.urlopen = urlopen
+
+    def run(self):
+        self.finished.emit(updates.check_for_update(
+            self.current_version, urlopen=self.urlopen))
+
+
+class UpdateDownloadWorker(QThread):
+    """Download and verify a release off the UI thread."""
+
+    progress = Signal(int, object)  # bytes downloaded, total or None
+    finished = Signal(object)       # the verified zip path
+    cancelled = Signal()
+    failed = Signal(str)            # plain-words message
+
+    def __init__(self, release, dest_dir, urlopen=None):
+        super().__init__()
+        self.release = release
+        self.dest_dir = dest_dir
+        self.urlopen = urlopen
+        self.cancel_event = threading.Event()
+
+    def run(self):
+        try:
+            path = updates.download_and_verify(
+                self.release, self.dest_dir,
+                urlopen=self.urlopen,
+                progress_cb=lambda done, total:
+                    self.progress.emit(done, total),
+                cancel_event=self.cancel_event)
+        except updates.UpdateCancelled:
+            self.cancelled.emit()
+        except updates.UpdateError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # never crash the thread silently
+            self.failed.emit("The update could not be downloaded "
+                             "(%s)." % exc)
+        else:
+            self.finished.emit(path)
+
+    def cancel(self):
+        self.cancel_event.set()
+
+
 class RaiseListener(QThread):
     """Listens on ~/.fyrn-chat-test/raise.sock for the pre-Qt
     fast path (fyrnchattest/__main__.py): a second launch sends
@@ -386,19 +457,46 @@ class HowToDialog(QDialog):
 # ---------------------------------------------------------------- main window
 
 
+# Workers still running when their close wait gives up are
+# parked here. A QThread object must never be destroyed
+# while its thread is running: Qt aborts the whole process
+# ("QThread: Destroyed while thread is still running"). The
+# bounded waits in closeEvent are normally plenty, but on a
+# slow or loaded machine a worker can outlive its wait; the
+# park keeps the object alive until its thread ends on its
+# own, so closing the window can never take the app down.
+_PARKED_WORKERS = []
+
+
+def _wait_for_worker(worker, timeout_ms):
+    """Wait up to timeout_ms for a worker thread to finish,
+    and park it if it is still running after that."""
+    if worker is None:
+        return
+    worker.wait(timeout_ms)
+    if worker.isRunning():
+        _PARKED_WORKERS.append(worker)
+
+
 class MainWindow(QMainWindow):
     """The test bench: model list on the left, Chat and Smoke
     test tabs on the right."""
 
     def __init__(self, fyrn_install, runner_factory=None,
                  models_folder=None, parent=None, log=None,
-                 include_ollama=True):
+                 include_ollama=True, check_updates=True,
+                 update_urlopen=None):
         super().__init__(parent)
         self.fyrn_install = fyrn_install
         self.runner_factory = runner_factory or LlamaRunner
         self.models_folder = (Path(models_folder) if models_folder
                               else get_fyrn_models_folder())
         self.include_ollama = include_ollama
+        # The update check runs on launch by default; tests turn
+        # it off (or hand it a stub opener) so the suite never
+        # touches the network.
+        self._check_updates = check_updates
+        self._update_urlopen = update_urlopen
         self._log = log
         self._home = ensure_home()
         self._settings = get_settings()
@@ -416,6 +514,10 @@ class MainWindow(QMainWindow):
         self._load_worker = None
         self._chat_worker = None
         self._smoke_worker = None
+        self._update_check_worker = None
+        self._update_download_worker = None
+        self._update_release = None
+        self._update_manual = False
         self._smoke_models = []
         self._smoke_results = []
         self._last_report_dir = None
@@ -435,6 +537,10 @@ class MainWindow(QMainWindow):
         self._ram_timer.timeout.connect(self._update_ram_label)
         self._ram_timer.start(2000)
         self._update_ram_label()
+        if self._check_updates:
+            # The update check starts after the window shows: a
+            # slow or absent network must never delay startup.
+            QTimer.singleShot(0, self._start_update_check)
 
     # ---------------------------------------------------------------- build
 
@@ -462,6 +568,11 @@ class MainWindow(QMainWindow):
         howto_action = help_menu.addAction("How to Use\tF1")
         howto_action.setToolTip("How to chat and smoke test")
         howto_action.triggered.connect(self._show_how_to_use)
+        check_action = help_menu.addAction("Check for updates")
+        check_action.setToolTip(
+            "Check GitHub for a newer version")
+        check_action.triggered.connect(
+            self._on_check_updates_activated)
         about_action = help_menu.addAction("About Fyrn Chat Test")
         about_action.setToolTip("Version, and which Fyrn this "
                                 "tests")
@@ -806,6 +917,21 @@ class MainWindow(QMainWindow):
         if model is None or self._loading() or self._smoke_running():
             return
         name = model["name"]
+        if is_embedding_model(model):
+            # An embedding model only turns text into numbers
+            # for search: it cannot write replies, so loading
+            # it for a chat would only fail at the first reply.
+            # Refuse it here, in plain words, instead.
+            self._log_action("load refused %s: embedding only"
+                             % name)
+            QMessageBox.warning(
+                self, "Can't chat with %s" % name,
+                "%s only turns text into numbers for search. "
+                "It can't write replies, so it can't chat. "
+                "Pick a chat model instead." % name)
+            self.statusBar().showMessage(
+                "%s can't chat: it is an embedding model." % name)
+            return
         self._log_action("load %s" % name)
         self.statusBar().showMessage("Loading %s..." % name)
         self.load_progress.setVisible(True)
@@ -946,6 +1072,7 @@ class MainWindow(QMainWindow):
     def _on_chat_failed(self, message):
         self._chat_worker = None
         self._chat_streaming = False
+        message = explain_reply_error(message)
         self._append_chat("\n[The reply stopped: %s]\n\n" % message)
         self.statusBar().showMessage("The reply stopped.")
         self._update_buttons()
@@ -1008,9 +1135,17 @@ class MainWindow(QMainWindow):
         prompts = result.get("prompts") or []
         first = prompts[0] if len(prompts) > 0 else None
         second = prompts[1] if len(prompts) > 1 else None
-        load = ("ok" if result.get("load_ok") else "failed")
-        if result.get("load_ok") and result.get("load_time_s"):
-            load = "ok (%.1f s)" % result["load_time_s"]
+        if result.get("load_ok"):
+            load = "ok"
+            if result.get("load_time_s"):
+                load = "ok (%.1f s)" % result["load_time_s"]
+        elif result.get("load_error"):
+            load = "failed"
+        else:
+            # No load was attempted: the run stopped before
+            # this model, or it is an embedding model the test
+            # skips. Not a failure.
+            load = "-"
         cells = [
             result["name"],
             load,
@@ -1075,6 +1210,13 @@ class MainWindow(QMainWindow):
             lines.append("Load failed: %s"
                          % result["load_error"])
             lines.append("")
+        if not result.get("prompts") and result.get("error") \
+                and not result.get("load_error"):
+            # Nothing ran: say why, when the run recorded a
+            # reason (an embedding model the test skips, or a
+            # run that stopped before this model).
+            lines.append(result["error"])
+            lines.append("")
         for entry in result.get("prompts") or []:
             lines.append("Prompt: %s" % entry["prompt"])
             if entry.get("error"):
@@ -1121,6 +1263,161 @@ class MainWindow(QMainWindow):
                          "failed, %d not tested"
                          % (passed, failed, untested))
         self._update_buttons()
+
+    # ---------------------------------------------------------------- updates
+
+    def _on_check_updates_activated(self):
+        """Help menu, Check for updates: the same check as on
+        launch, except the user asked, so an answer is owed
+        even when nothing is out."""
+        if self._update_check_worker is not None \
+                or self._update_download_worker is not None:
+            return
+        self._update_manual = True
+        self._start_update_check()
+
+    def _start_update_check(self):
+        if self._update_check_worker is not None \
+                or self._update_download_worker is not None:
+            return
+        worker = UpdateCheckWorker(__version__,
+                                   urlopen=self._update_urlopen)
+        self._update_check_worker = worker
+        worker.finished.connect(self._on_update_check_finished)
+        worker.start()
+
+    def _on_update_check_finished(self, result):
+        self._update_check_worker = None
+        manual = self._update_manual
+        self._update_manual = False
+        state = result.get("state")
+        if state == "newer":
+            # Ask first, never a silent download.
+            self._update_release = result
+            latest = result["latest"]
+            self._log_action("update available: %s" % latest)
+            answer = QMessageBox.question(
+                self, "Update available",
+                "Fyrn Chat Test %s is out (you have %s).\n\n"
+                "Download it now? The download is checked "
+                "against its checksum before anything is "
+                "installed." % (latest, __version__),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes)
+            if answer == QMessageBox.Yes:
+                self._start_update_download()
+            else:
+                self.statusBar().showMessage(
+                    "Update skipped. It will be offered again "
+                    "next time.")
+            return
+        if not manual:
+            # Up to date, or the check could not run: the
+            # launch check stays silent either way.
+            return
+        if state == "current":
+            QMessageBox.information(
+                self, "Up to date",
+                "Fyrn Chat Test %s is the newest version."
+                % __version__)
+        else:
+            QMessageBox.warning(
+                self, "Couldn't check for updates",
+                "Fyrn Chat Test could not check for updates.\n\n"
+                "%s" % result.get("reason", ""))
+
+    def _start_update_download(self):
+        release = self._update_release
+        if release is None:
+            return
+        self.statusBar().showMessage(
+            "Downloading update %s..." % release["latest"])
+        worker = UpdateDownloadWorker(
+            release, updates.staged_dir(self._home),
+            urlopen=self._update_urlopen)
+        self._update_download_worker = worker
+        worker.progress.connect(self._on_update_download_progress)
+        worker.finished.connect(self._on_update_download_finished)
+        worker.cancelled.connect(self._on_update_download_cancelled)
+        worker.failed.connect(self._on_update_download_failed)
+        worker.start()
+
+    def _on_update_download_progress(self, done, total):
+        release = self._update_release or {}
+        version = release.get("latest", "")
+        if total:
+            percent = round(done * 100 / total)
+            self.statusBar().showMessage(
+                "Downloading update %s... %d%%"
+                % (version, percent))
+        else:
+            self.statusBar().showMessage(
+                "Downloading update %s... %s"
+                % (version, format_size(done)))
+
+    def _on_update_download_finished(self, zip_path):
+        self._update_download_worker = None
+        release = self._update_release or {}
+        version = release.get("latest", "")
+        self._log_action("update %s downloaded and verified"
+                         % version)
+        answer = QMessageBox.question(
+            self, "Update downloaded",
+            "Fyrn Chat Test %s is downloaded and checked.\n\n"
+            "Restart now to complete the update?"
+            % version,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            # The verified zip stays staged: the next launch
+            # installs it before the window shows.
+            self.statusBar().showMessage(
+                "Update %s will finish the next time Fyrn Chat "
+                "Test starts." % version)
+            return
+        try:
+            updates.install_update(zip_path)
+        except updates.UpdateError as exc:
+            # The staged zip stays put: the next launch tries
+            # the install again.
+            reason = str(exc)
+            QMessageBox.warning(
+                self, "Update failed",
+                "%s\n\nIt will be tried again the next time "
+                "Fyrn Chat Test starts." % reason)
+            self.statusBar().showMessage(
+                "The update could not be installed.")
+            return
+        except Exception as exc:  # noqa: BLE001 - shown, not raised
+            # install_update speaks UpdateError; anything else
+            # is unexpected, and still must not crash the window.
+            QMessageBox.warning(
+                self, "Update failed",
+                "The update could not be installed (%s).\n\n"
+                "It will be tried again the next time Fyrn Chat "
+                "Test starts." % exc)
+            self.statusBar().showMessage(
+                "The update could not be installed.")
+            return
+        updates.clear_staged(self._home)
+        self._log_action("update %s installed, restarting"
+                         % version)
+        updates.schedule_restart()
+        self.close()
+
+    def _on_update_download_cancelled(self):
+        self._update_download_worker = None
+        self.statusBar().showMessage("Update download stopped.")
+
+    def _on_update_download_failed(self, message):
+        self._update_download_worker = None
+        self._log_action("update download failed: %s" % message)
+        QMessageBox.warning(
+            self, "Update failed",
+            "The update could not be downloaded.\n\n%s"
+            % message)
+        self.statusBar().showMessage(
+            "The update could not be downloaded.")
 
     # ---------------------------------------------------------------- menus
 
@@ -1195,18 +1492,25 @@ class MainWindow(QMainWindow):
         # A worker that is still running when the window is
         # destroyed aborts the process ("QThread: Destroyed
         # while thread is still running"), so every worker is
-        # cancelled and waited for before the window closes.
+        # cancelled and waited for before the window closes;
+        # one that outlives its wait is parked, never dropped
+        # (see _wait_for_worker).
+        if self._update_download_worker is not None:
+            self._update_download_worker.cancel()
+        _wait_for_worker(self._update_download_worker, 15000)
+        # The check is one short request with an 8 second
+        # timeout: the wait covers it.
+        _wait_for_worker(self._update_check_worker, 10000)
         if self._chat_worker is not None:
             self._chat_worker.cancel()
-            self._chat_worker.wait(5000)
+        _wait_for_worker(self._chat_worker, 5000)
         if self._smoke_worker is not None:
             self._smoke_worker.cancel()
-            self._smoke_worker.wait(15000)
+        _wait_for_worker(self._smoke_worker, 15000)
         if self._load_worker is not None:
             self._load_worker.cancel()
-            self._load_worker.wait(5000)
-        if self._scan_worker is not None:
-            self._scan_worker.wait(5000)
+        _wait_for_worker(self._load_worker, 5000)
+        _wait_for_worker(self._scan_worker, 5000)
         # A load in progress cannot be stopped (the backend
         # loads in one opaque step): the wait above gives it a
         # chance, and unloading here frees what it loaded.

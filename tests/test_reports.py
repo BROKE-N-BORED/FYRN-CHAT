@@ -66,6 +66,30 @@ class ReportFormatTests(unittest.TestCase):
         self.assertIn("Load failed: The model could not be "
                       "loaded (boom).", text)
 
+    def test_not_tested_reason_shows_in_markdown(self):
+        results = _results() + [
+            {"name": "embed.gguf", "path": "/m/embed.gguf",
+             "source": "ollama", "size": 1024,
+             "load_ok": False, "load_time_s": None,
+             "load_error": None, "prompts": [],
+             "verdict": "not tested",
+             "error": "Embedding only: this model can't write "
+                      "replies, so the smoke test doesn't "
+                      "apply."},
+        ]
+        text = format_report_md(results, _META)
+        self.assertIn("4 models tested: 1 passed, 1 failed, "
+                      "2 not tested.", text)
+        # No load was attempted for either not-tested model,
+        # so the Load cell is a dash, not "failed".
+        self.assertIn("| embed.gguf | - |", text)
+        self.assertIn("| c.gguf | - |", text)
+        self.assertIn("Embedding only: this model can't write "
+                      "replies, so the smoke test doesn't "
+                      "apply.", text)
+        self.assertIn("Not tested: the run stopped before this "
+                      "model.", text)
+
     def test_json_round_trips(self):
         text = format_report_json(_results(), _META)
         payload = json.loads(text)

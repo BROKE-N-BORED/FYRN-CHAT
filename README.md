@@ -9,9 +9,13 @@ Chat with the models on this PC through Fyrn, and smoke test them. No Ollama inv
 
 ## Install
 
-Fyrn must be installed first. Then download `fyrn-chat-test-v0.1.zip`, unzip it, and double-click **Install-Fyrn-Chat-Test**. Start it from the Fyrn Chat Test icon, or run: `fyrn-chat-test`
+Fyrn must be installed first. Then download `fyrn-chat-test-v0.1.1.zip`, unzip it, and double-click **Install-Fyrn-Chat-Test**. Start it from the Fyrn Chat Test icon, or run: `fyrn-chat-test`
 
 The installer creates no venv and downloads nothing: it runs under Fyrn's venv.
+
+## Updates
+
+Fyrn Chat Test checks for a newer release when it starts. If one is out, it asks before downloading anything, checks the download against the release's checksum before installing, and asks before restarting to finish the update. Saying no to the restart finishes the update the next time the app starts.
 
 ## How it finds Fyrn
 
